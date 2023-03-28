@@ -37,7 +37,6 @@ class _Part:
     def split(self,position):
         new=_Part(position,self.to)
         self.to=position
-        print(new.__dict__)
         return new
 class AutoDownload:
     def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
@@ -118,11 +117,12 @@ class AutoDownload:
         os.makedirs(self.tempFileDir)
         if self.threaded:threading.Thread(target=self._wait,daemon=self.deamon,name="Download controller")
         else:return self._wait()
-    def changeUnit(self,num:int|float):
+    def changeUnit(self,num:int|float)->str:
         units=["B","KB","MB","GB","TB"]
         for i in range(len(units)):
             if num/(1024**i)<1024:
                 return "%.2f%s"%((num/(1024**i)),units[i])
+        return ""
     def _progressUpgrade(self,part:_Part,length:int):
         t=int(time.time())
         if t!=part.histoyTime:
@@ -173,6 +173,7 @@ class AutoDownload:
             self._logShower("Fail!",level=logging.ERROR)
         if self.callbackFunction!=None:
             self.callbackFunction(retsult)
+        return retsult
     def _controller(self)->bool:
         firstHeader=self.header.copy()
         firstHeader["Range"]="bytes=%d-"%(self.startSize)
@@ -257,6 +258,8 @@ class AutoDownload:
                     return
             except BaseException as err:
                 retryNum+=1
+                if retryNum>=self.maxRetry:
+                    raise ConnectError(self.url)
                 self.statue=f"retry {retryNum}"
                 part.statueNum=1
                 self._logShower("Part %d %s:%s"%(partNum,err.__class__.__name__,str(err)),level=logging.WARNING)
