@@ -20,7 +20,18 @@ class ZeroSizeError(Exception):
     def __str__(self) -> str:
         return "Can not get the  size of %s" % self.url
 class _Part:
-    def __init__(self,start_,to,fileName:str=None,stream:None|requests.Response=None) -> None:
+    """
+    A download task. It mean a part of the file we are downloading.
+    It include the range of this task, the response, the statue, etc.
+    """
+    def __init__(self,start_:int,to:int,fileName:str|None=None,stream:None|requests.Response=None) -> None:
+        """
+        New a Part object
+        :param start_: the start position of the part
+        :param to: the end position of the part
+        :param fileName: the tempfile name of the part
+        :param stream: the response of the part
+        """
         self.start=start_
         self.to=to
         self.fileName=fileName
@@ -28,20 +39,27 @@ class _Part:
         self.retryTime=0
         self.statue="init"
         self.stream=stream
-        self.progress=None
-        self.now=0
-        self.histoyTime=0
-        self.historyNum=0
-        self.speeds=""
-        self.statueNum=0
-    def split(self,position):
+        self.progress:None|rich.progress.TaskID=None
+        self.now:int=0
+        self.histoyTime:int=0
+        self.historyNum:int=0
+        self.speeds:str=""
+        self.statueNum:int=0
+    def split(self,position:int):
+        """
+        Split the part into two parts. If the position is out of range, it will return empty _Part object after the self.to
+        :param position: the position of the part we want to split
+        :return: a new _Part object
+        """
+        if position>=self.to or position<=self.start:
+            return _Part(self.to,self.to)
         new=_Part(position,self.to)
         self.to=position
         return new
 class AutoDownload:
     def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
-                 error:bool=True,log:bool=True,showProgressBar:bool=True,threaded:bool=False,threadNum=0,maxThreadNum=10,desiredCompletionTime=30,
-                 callbackFunction:None|Callable=None,deamon=False,header:dict={})->None:
+                 error:bool=True,log:bool=True,showProgressBar:bool=True,threaded:bool=False,threadNum:int=0,maxThreadNum:int=10,desiredCompletionTime:int=30,
+                 callbackFunction:None|Callable[[bool], Any]=None,deamon:bool=False,header:dict={})->None:
         """
         Download file from url to file
         :param url: url to download
@@ -97,16 +115,29 @@ class AutoDownload:
                 rich.progress.TextColumn("{task.fields[statue]}"),
                 transient=True
             )
-        self.tempFileDir=os.path.join(tempfile.gettempdir(),self.url.split("/")[-1]+str(random.random()))
-    def _logShower(self,msg,level=logging.INFO):
+        self.tempFileDir=os.path.join(tempfile.gettempdir(),self.url.split("/")[-1].split("?")[0]+str(random.random()))
+    def _logShower(self,msg:str,level=logging.INFO):
+        """
+        Show log message through with self.logger. And if self.log is False, it will do nothing.
+        :param msg: the message
+        :param level: the level of the message
+        """
         if not self.log:
             return
         self.logger.log(level=level,msg=msg)
     def _errorShower(self,err:Exception):
+        """
+        Show error message and raise it.
+        :param err: the error
+        """
         self._logShower("%s:%s"%(err.__class__.__name__,str(err)),logging.ERROR)
         if self.error:
             raise err
     def start(self)->bool|None:
+        """
+        Start the download.
+        :return: True if success, False if fail, None if self.threaded is True.
+        """
         if self.continueDownloadTest:
             if os.path.isfile(self.file) and os.access(self.file,os.W_OK):#文件是否存在 and 是否可读
                 self.startSize=os.path.getsize(self.file)
@@ -118,12 +149,22 @@ class AutoDownload:
         if self.threaded:threading.Thread(target=self._wait,daemon=self.deamon,name="Download controller")
         else:return self._wait()
     def changeUnit(self,num:int|float)->str:
+        """
+        Change the unit of the data size.
+        :param num: the size of the data
+        :return: the formatted string 
+        """
         units=["B","KB","MB","GB","TB"]
         for i in range(len(units)):
             if num/(1024**i)<1024:
                 return "%.2f%s"%((num/(1024**i)),units[i])
         return ""
     def _progressUpgrade(self,part:_Part,length:int):
+        """
+        Updata the task.
+        :param part: the part to be updated
+        :param length: the length of the new data
+        """
         t=int(time.time())
         if t!=part.histoyTime:
             part.speed=part.historyNum
@@ -133,6 +174,9 @@ class AutoDownload:
         part.historyNum+=length
         part.now+=length
     def _updateProgressBar(self):
+        """
+        Control ProgressBar
+        """
         if not self.showProgressBar:
             return
         colors=["red","blue","green","gray","purple"]
@@ -159,12 +203,19 @@ class AutoDownload:
                 time.sleep(1)
             time.sleep(1)
             self.threadNum=min(self.maxThreadNum,(self.fileSize)//(self._partition[0].speed*self.desiredCompletionTime))
-        for i in range(1,self.threadNum):
-            self._partition.append(self._partition[-1].split(self._partition[-1].start+self._partition[-1].now+(self.fileSize-self._partition[0].now)//(self.threadNum)))
-            self._partition[-1].fileName=os.path.join(self.tempFileDir,f"{len(self._partition)}.tmp")
-            self._threadPool.append(threading.Thread(target=self._download,daemon=self.deamon,args=[len(self._partition)-1]))
-            self._waitList.append(i)
-            self._threadPool[-1].start()
+        if self.threadNum>1:
+            if self._partition[0].start+self._partition[0].now+(self.fileSize-self._partition[0].now)//(self.threadNum)>=self._partition[0].to:
+                return
+            self._partition.append(self._partition[0].split(self._partition[0].start+self._partition[0].now+(self.fileSize-self._partition[0].now)//(self.threadNum)))
+            elseSize=self._partition[-1].to-self._partition[-1].start
+            for i in range(2,self.threadNum):
+                self._partition.append(self._partition[-1].split(self._partition[-1].start+elseSize//(self.threadNum-1)))
+                
+            for i in range(1,len(self._partition)):
+                self._partition[i].fileName=os.path.join(self.tempFileDir,f"{i}.tmp")
+                self._threadPool.append(threading.Thread(target=self._download,daemon=self.deamon,args=[i]))
+                self._waitList.append(i)
+                self._threadPool[-1].start()
     def _wait(self)->bool:
         retsult=self._controller()
         if retsult:
@@ -190,7 +241,7 @@ class AutoDownload:
                 self.fileSize=int(retsult.headers['content-length'])
                 if not self.fileSize:
                     raise ZeroDivisionError(self.url)
-                self._partition.append(_Part(self.startSize,self.startSize+int(self.fileSize),os.path.join(self.tempFileDir,"1.tmp"),retsult))
+                self._partition.append(_Part(self.startSize,self.startSize+int(self.fileSize),os.path.join(self.tempFileDir,"0.tmp"),retsult))
                 self._threadPool.append(threading.Thread(target=self._download,daemon=self.deamon,args=[0]))
                 self._waitList.append(0)
                 self._threadPool[0].start()
@@ -219,6 +270,10 @@ class AutoDownload:
 
                             
     def _download(self,partNum:int)->None:
+        """
+        The download thread
+        :param partNum: the partition number
+        """
         part=self._partition[partNum]
         header=self.header.copy()
         header["Range"]="bytes=%d-"%(part.start)
