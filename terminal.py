@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 
 from autoDownload import AutoDownload
+from rich import print as richPrint
+import os
+
 
 def main():
     import argparse
@@ -12,7 +15,7 @@ def main():
     argparser.add_argument('-m', '--max',type = int, choices = range(1,20), default = 10, help = 'The max number of threads to download')
     argparser.add_argument('-r', '--retry', type = int, choices = range(0,10), default = 5, help = "Max retry times")
     argparser.add_argument('-H', '--header', type = str, default = "{}", help = 'Header of the requests')
-    argparser.add_argument('-w', '--wish', type = float, default = 10, help = 'time in seconds. It is our reference value for calculating the threadNum')
+    argparser.add_argument('-w', '--wish', type = float, default = 10.0, help = 'time in seconds. It is our reference value for calculating the threadNum')
     args = argparser.parse_args()
     
     try:
@@ -26,7 +29,10 @@ def main():
         filename = filename.split("?")[0]
     else:
         filename=args.filename
+    
     try:
+        if filename=="":
+            raise ValueError("Can not get the name of the file by URL. Please set it by '-f' or '--filename'")
         retsult=AutoDownload(
             url = args.Url,
             file = filename,
@@ -37,8 +43,10 @@ def main():
             desiredCompletionTime=args.wish
         ).start()
         if retsult:
-            print("Successfully")
+            richPrint("[green]Successfully downloaded the file.[/green]")
+            richPrint(f"The file was saved at [yellow]{os.path.abspath(filename)}[/yellow]")
         else:
-            print("Failed to download")
+            richPrint("[red]Failed to download[/red]")
     except:
+        richPrint("[red]Failed to download[/red]")
         raise

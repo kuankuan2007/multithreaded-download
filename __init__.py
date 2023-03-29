@@ -2,6 +2,7 @@ import requests
 import logging
 import threading
 import rich.progress
+import rich.text
 import os
 from typing import *
 import tempfile
@@ -19,6 +20,32 @@ class ZeroSizeError(Exception):
         self.url=url
     def __str__(self) -> str:
         return "Can not get the  size of %s" % self.url
+class MyTimeRemainingColumn(rich.progress.TimeRemainingColumn):
+    def render(self, task: rich.progress.Task) -> rich.text.Text:
+        """Show time remaining."""
+        if self.elapsed_when_finished and task.finished:
+            task_time = task.finished_time
+            style = "progress.elapsed"
+        else:
+            task_time = task.time_remaining
+            style = "progress.remaining"
+
+        if task.total is None:
+            return rich.text.Text("unknown", style=style)
+
+        if task_time is None:
+            return rich.text.Text("--:--" if self.compact else "-:--:--", style=style)
+
+        # Based on https://github.com/tqdm/tqdm/blob/master/tqdm/std.py
+        minutes, seconds = divmod(int(task_time), 60)
+        hours, minutes = divmod(minutes, 60)
+
+        if self.compact and not hours:
+            formatted = f"{minutes:02d}:{seconds:02d}"
+        else:
+            formatted = f"{hours:d}:{minutes:02d}:{seconds:02d}"
+
+        return rich.text.Text(formatted, style=style)
 class _Part:
     """
     A download task. It mean a part of the file we are downloading.
@@ -63,7 +90,8 @@ class _Part:
         return self.to<other.to
 class AutoDownload:
     def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
-                 error:bool=True,log:bool=True,showProgressBar:bool=True,threaded:bool=False,threadNum:int=0,maxThreadNum:int=10,desiredCompletionTime:int=30,
+                 error:bool=True,log:bool=True,showProgressBar:bool=True,transient:bool=False,
+                 threaded:bool=False,threadNum:int=0,maxThreadNum:int=10,desiredCompletionTime:int=30,
                  callbackFunction:None|Callable[[bool], Any]=None,deamon:bool=False,header:dict={})->None:
         """
         Download file from url to file
@@ -77,6 +105,7 @@ class AutoDownload:
         :param error: whether to raise error
         :param log: whether to print log
         :param showProgressBar: whether to show progress bar
+        :param transient: whether to keep progress after download
         :param threaded: whether to use thread for main thread
         :param callbackFunction: callback function
         :param threadNum: num of thread. If threadNum < 1, we'll automatically calculates the threadNum based on the total size and the speed of the first thread
@@ -93,7 +122,6 @@ class AutoDownload:
         self.startSize = startSize
         self.error = error
         self.log = log
-        self.showProgressBar = showProgressBar
         self.threaded = threaded
         self.callbackFunction = callbackFunction
         self.deamon=deamon
@@ -106,20 +134,20 @@ class AutoDownload:
         self._waitList:List[int]=[]
         self.logger=logging.getLogger("Download")
         self.openType=openType
-        if self.showProgressBar:
-            self.progress=rich.progress.Progress(
-                rich.progress.TextColumn("[progress.description]{task.description}"),
-                rich.progress.BarColumn(),
-                rich.progress.TextColumn("[blue]{task.fields[now]}[/blue]"),
-                rich.progress.TextColumn("[blue]/[/blue]"),
-                rich.progress.TextColumn("[blue]{task.fields[size]}[/blue]"),
-                rich.progress.TaskProgressColumn(),
-                rich.progress.TextColumn("[blue]ETA:[/blue]"),
-                rich.progress.TimeRemainingColumn(),
-                rich.progress.TextColumn("[red]{task.fields[speed]}[/red]"),
-                rich.progress.TextColumn("{task.fields[statue]}"),
-                transient=True
-            )
+        self.progress=rich.progress.Progress(
+            rich.progress.TextColumn("[progress.description]{task.description}"),
+            rich.progress.BarColumn(),
+            rich.progress.TextColumn("[blue]{task.fields[now]}[/blue]"),
+            rich.progress.TextColumn("[blue]/[/blue]"),
+            rich.progress.TextColumn("[blue]{task.fields[size]}[/blue]"),
+            rich.progress.TaskProgressColumn(),
+            rich.progress.TextColumn("[blue]ETA:[/blue]"),
+            MyTimeRemainingColumn(),
+            rich.progress.TextColumn("[red]{task.fields[speed]}[/red]"),
+            rich.progress.TextColumn("{task.fields[statue]}"),
+            transient=transient,
+            disable=not showProgressBar
+        )
         self.tempFileDir=os.path.join(tempfile.gettempdir(),self.url.split("/")[-1].split("?")[0]+str(random.random()))
     def _logShower(self,msg:str,level=logging.INFO):
         """
@@ -182,8 +210,6 @@ class AutoDownload:
         """
         Control ProgressBar
         """
-        if not self.showProgressBar:
-            return
         colors=["red","blue","green","gray","purple"]
         statuesColor=["blue","yellow","green","red"]
         with self.progress:
@@ -207,7 +233,7 @@ class AutoDownload:
             while self._partition[0].speed==0:
                 time.sleep(1)
             time.sleep(1)
-            self.threadNum=min(self.maxThreadNum,(self.fileSize)//(self._partition[0].speed*self.desiredCompletionTime))
+            self.threadNum=min(self.maxThreadNum,int((self.fileSize)//(self._partition[0].speed*self.desiredCompletionTime)))
         if self.threadNum>1:
             if self._partition[0].start+self._partition[0].now+(self.fileSize-self._partition[0].now)//(self.threadNum)>=self._partition[0].to:
                 return
@@ -223,6 +249,7 @@ class AutoDownload:
                 self._threadPool[-1].start()
     def _wait(self)->bool:
         retsult=self._controller()
+        self.progress.stop()
         if retsult:
             self._logShower("Successfully!")
         else:
@@ -239,9 +266,26 @@ class AutoDownload:
                 if retsult.status_code//100 not in [2,3]:
                     raise ConnectError(self.url)
                 if 'content-length' not in retsult.headers:
-                    self._logShower("Can not get the length of the file. try to download normally")
+                    self._logShower("Can not get the length of the file. try to download normally",level=logging.WARNING)
                     with open(self.file,self.openType) as f:
-                        f.write(retsult.content)
+                        checkTime=1
+                        now=0
+                        speed=0
+                        speeds="unknown"
+                        with self.progress:
+                            task=self.progress.add_task("[yellow]download",start=False,total=None,speed=self.changeUnit(speed),size="unknown",now="0B",statue="")
+                            for i in retsult.iter_content(chunk_size=self.chunkSize):
+                                now+=len(i)
+                                if checkTime!=int(time.time()):
+                                    checkTime=int(time.time())
+                                    speeds=self.changeUnit(speed)+"/s"
+                                    speed=len(i)
+                                else:
+                                    speed+=len(i)
+                                self.progress.update(task,speed=speeds,statue="[red]downloading",now=self.changeUnit(now))
+                                f.write(i)
+                        self.progress.update(task,speed=speeds,statue="[green]finished",now=self.changeUnit(now))
+                        self.progress.refresh()
                     return True
                 self.fileSize=int(retsult.headers['content-length'])
                 if not self.fileSize:
@@ -275,6 +319,8 @@ class AutoDownload:
                             os.remove(i.fileName)
                         except:
                             pass
+                self.progress.update(splicing,statue="[green]finished[/green]")
+                self.progress.refresh()
                 return True
     def _finished(self)->None:
         """
