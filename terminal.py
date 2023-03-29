@@ -10,9 +10,9 @@ def main():
     argparser.add_argument('-f', '--filename', type = str, default="", help="The filename of the file")
     argparser.add_argument('-n', '--threadnum',type = int, choices = range(0,20), default = 0, help = 'How many thread you want to download. 0 means auto')
     argparser.add_argument('-m', '--max',type = int, choices = range(1,20), default = 10, help = 'The max number of threads to download')
-    argparser.add_argument('-r', '--retry', type = int, choices = range(0,100), default = 5, help = "Max retry times")
+    argparser.add_argument('-r', '--retry', type = int, choices = range(0,10), default = 5, help = "Max retry times")
     argparser.add_argument('-H', '--header', type = str, default = "{}", help = 'Header of the requests')
-    argparser.add_argument('-w', '--wish', type = int, default = 10, help = 'time in seconds. It is our reference value for calculating the threadNum')
+    argparser.add_argument('-w', '--wish', type = float, default = 10, help = 'time in seconds. It is our reference value for calculating the threadNum')
     args = argparser.parse_args()
     
     try:

@@ -45,6 +45,7 @@ class _Part:
         self.historyNum:int=0
         self.speeds:str=""
         self.statueNum:int=0
+        self.startTime:float=1.0
     def split(self,position:int):
         """
         Split the part into two parts. If the position is out of range, it will return empty _Part object after the self.to
@@ -56,6 +57,10 @@ class _Part:
         new=_Part(position,self.to)
         self.to=position
         return new
+    def __lt__(self,other):
+        if self.start!=other.start:
+            return  self.start<other.start
+        return self.to<other.to
 class AutoDownload:
     def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
                  error:bool=True,log:bool=True,showProgressBar:bool=True,threaded:bool=False,threadNum:int=0,maxThreadNum:int=10,desiredCompletionTime:int=30,
@@ -258,6 +263,7 @@ class AutoDownload:
             if not self._waitList:
                 self._logShower("All download finished. Start splicing",level=logging.DEBUG)
                 splicing=self.progress.add_task("[yellow]splicing",total=self.fileSize,speed="",size="",now="",statue="")
+                self._partition.sort()
                 with open(self.file,self.openType) as wf:
                     for i in self._partition:
                         with open(i.fileName,"rb") as f:
@@ -265,10 +271,43 @@ class AutoDownload:
                             data=data[:i.to-i.start]
                             wf.write(data)
                             self.progress.update(splicing,advance=len(data))
-                        os.remove(i.fileName)
+                        try:
+                            os.remove(i.fileName)
+                        except:
+                            pass
                 return True
+    def _finished(self)->None:
+        """
+        When a download thread is finished. Find another part which is the slowest to help.
+        """
+        least={
+            "num":None,
+            "rest":0
+        }
+        for i in range(len(self._partition)):
+            if self._partition[i].statue=="finished":
+                continue
+            if self._partition[i].speed==0:
+                if self._partition[i].now==0:
+                    continue
+                speed=self._partition[i].now/(time.time()-self._partition[i].startTime)
+            else:
+                speed=self._partition[i].speed
+            if (self._partition[i].to-self._partition[i].start-self._partition[i].now)/speed>least["rest"]:
+                least["num"]=i
+                least["rest"]=(self._partition[i].to-self._partition[i].start-self._partition[i].now)/speed
+        if least["num"]==None:
+            self._logShower("No part need help, pass",level=logging.DEBUG)
+            return
+        self._logShower(f"Part {least['num']} is the slowest one. Split it.",level=logging.DEBUG)
+        if least["rest"]>self.desiredCompletionTime:
+            new=self._partition[least["num"]].split((self._partition[least["num"]].to-self._partition[least["num"]].start-self._partition[least["num"]].now)//2+self._partition[least["num"]].start+self._partition[least["num"]].now)
+            self._partition.append(new)
+            self._threadPool.append(threading.Thread(target=self._download,args=[len(self._partition)-1]))
+            self._partition[-1].fileName=os.path.join(self.tempFileDir,f"{len(self._partition)-1}.tmp")
+            self._waitList.append(len(self._partition)-1)
+            self._threadPool[-1].start()
 
-                            
     def _download(self,partNum:int)->None:
         """
         The download thread
@@ -294,6 +333,8 @@ class AutoDownload:
                         part.statue="downloading"
                     self._logShower(f"Part {partNum} start downloading",level=logging.DEBUG)
                     part.statueNum=2
+                    part.startTime=time.time()
+                    part.now=0
                     for data in part.stream.iter_content(chunk_size=self.chunkSize):
                         if part.start+part.now>part.to:
                             part.statue="finished"
@@ -303,6 +344,7 @@ class AutoDownload:
                             part.speed=0
                             part.speeds="--"
                             self._logShower(f"Part {partNum} is finished",level=logging.DEBUG)
+                            self._finished()
                             return
                         f.write(data)
                         self._progressUpgrade(part,len(data))
@@ -310,11 +352,15 @@ class AutoDownload:
                     part.statueNum=3
                     self._waitList.remove(partNum)
                     part.now=part.to-part.start
+                    part.speed=0
+                    part.speeds="--"
+                    self._logShower(f"Part {partNum} is finished",level=logging.DEBUG)
+                    self._finished()
                     return
             except BaseException as err:
                 retryNum+=1
                 if retryNum>=self.maxRetry:
-                    raise ConnectError(self.url)
+                    raise err
                 self.statue=f"retry {retryNum}"
                 part.statueNum=1
                 self._logShower("Part %d %s:%s"%(partNum,err.__class__.__name__,str(err)),level=logging.WARNING)
