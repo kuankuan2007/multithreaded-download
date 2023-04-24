@@ -4,7 +4,7 @@ import threading
 import rich.progress
 import rich.text
 import os
-from typing import Callable,Any,List
+from typing import Callable,Any,List,Union
 import tempfile
 import random
 import time
@@ -51,7 +51,7 @@ class _Part:
     A download task. It mean a part of the file we are downloading.
     It include the range of this task, the response, the statue, etc.
     """
-    def __init__(self,start_:int,to:int,num:int=0,fileName:str="",stream:None|requests.Response=None) -> None:
+    def __init__(self,start_:int,to:int,num:int=0,fileName:str="",stream:Union[None,requests.Response]=None) -> None:
         """
         New a Part object
         :param start_: the start position of the part
@@ -68,7 +68,7 @@ class _Part:
         self.retryTime=0
         self.statue="init"
         self.stream=stream
-        self.progress:None|rich.progress.TaskID=None
+        self.progress:Union[None,rich.progress.TaskID]=None
         self.now:int=0
         self.histoyTime:int=0
         self.historyNum:int=0
@@ -91,10 +91,10 @@ class _Part:
             return  self.start<other.start
         return self.to<other.to
 class AutoDownload:
-    def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,maxThreadRetry:int=-1,timeout:int|None=30,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
+    def __init__(self,url:str,file:str,chunkSize:int=1024,maxRetry:int=5,maxThreadRetry:int=-1,timeout:Union[int,None]=30,continueDownloadTest:bool=False,startSize:int=0,openType:str="wb",
                  error:bool=True,log:bool=True,showProgressBar:bool=True,transient:bool=False,
                  threaded:bool=False,threadNum:int=0,maxThreadNum:int=10,desiredCompletionTime:int=30,
-                 callbackFunction:None|Callable[[bool], Any]=None,deamon:bool=False,header:dict={})->None:
+                 callbackFunction:Union[None,Callable[[bool], Any]]=None,deamon:bool=False,header:dict={})->None:
         """
         Download file from url to file
         :param url: url to download
@@ -180,7 +180,7 @@ class AutoDownload:
         self.fail=True
         if self.error:
             raise err
-    def start(self)->bool|None:
+    def start(self)->Union[bool,None]:
         """
         Start the download.
         :return: True if success, False if fail, None if self.threaded is True.
@@ -195,7 +195,7 @@ class AutoDownload:
         os.makedirs(self.tempFileDir)
         if self.threaded:threading.Thread(target=self._wait,daemon=self.deamon,name="Download controller")
         else:return self._wait()
-    def changeUnit(self,num:int|float)->str:
+    def changeUnit(self,num:Union[int,float])->str:
         """
         Change the unit of the data size.
         :param num: the size of the data
@@ -449,6 +449,7 @@ class AutoDownload:
                     self._logShower(f"Part {partNum} is finished",level=logging.DEBUG)
                     self._finished()
                     return
+
             except BaseException as err:
                 if retryNum==self.maxThreadRetry:
                     self._errorShower(err)
